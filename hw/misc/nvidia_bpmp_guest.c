@@ -121,7 +121,7 @@ static void nvidia_bpmp_guest_instance_init(Object *obj)
 	NvidiaBpmpGuestState *s = NVIDIA_BPMP_GUEST(obj);
 
 	/* allocate memory map region */
-	memory_region_init_io(&s->iomem, obj, &nvidia_bpmp_guest_ops, s, TYPE_NVIDIA_BPMP_GUEST, 0x100);
+	memory_region_init_io(&s->iomem, obj, &nvidia_bpmp_guest_ops, s, TYPE_NVIDIA_BPMP_GUEST, MEM_SIZE);
 	sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->iomem);
 
 	s->host_device_fd = open(HOST_DEVICE_PATH, O_RDWR); // Open the device with read/write access
