@@ -8,14 +8,14 @@
 typedef struct NvidiaBpmpGuestState NvidiaBpmpGuestState;
 DECLARE_INSTANCE_CHECKER(NvidiaBpmpGuestState, NVIDIA_BPMP_GUEST, TYPE_NVIDIA_BPMP_GUEST)
 
-#define TX_BUF 0x0000
-#define RX_BUF 0x0200
-#define TX_SIZ 0x0400
-#define RX_SIZ 0x0401
-#define RET_COD 0x0402
-#define MRQ 0x0500
+#define TX_BUF   0x0000
+#define RX_BUF   0x0200
+#define TX_SIZ   0x0400
+#define RX_SIZ   0x0408
+#define RET_COD  0x0410
+#define MRQ      0x0500
 
-#define MEM_SIZE 0x1000
+#define MEM_SIZE 0x600
 #define HOST_DEVICE_PATH "/dev/bpmp-host"
 #define MESSAGE_SIZE 0x0200
 
@@ -26,27 +26,31 @@ struct NvidiaBpmpGuestState
 	SysBusDevice parent_obj;
 	MemoryRegion iomem;
 	int host_device_fd;
-	uint64_t mem[MEM_SIZE];
+	uint8_t mem[MEM_SIZE];
 };
 
-// Device memory map:
-
+// Device memory map: 
+ 
 // 0x090c0000 +  /* Base address, size 0x01000 */
 
 //      0x0000 \ Tx buffer
 //      0x01FF /
 //      0x0200 \ Rx buffer
 //      0x03FF /
-//      0x400  -- Tx size
-//      0x401  -- Rx size
-//      0x402  -- Ret
-//      0x500  -- mrq
+//      0x0400  -- Tx size
+//      0x0408  -- Rx size
+//      0x0410  -- Ret
+//      0x0500  -- mrq
 
+
+
+//  Data should be aligned to 64bit paragraph. 
+ 
 //  Protocol is:
-//  1) write data buffers to 0x0000-0x01FF and 0x0200-0x03FF
-//  2) write buffer sizes to 0x400 (Tx) and 0x 401 (Rx)
-//  2) start operation by writing mrq opcode to address 0x0500
-//  3) read ret code from 0x402 and response data from the buffers
+//  1. Write data buffers to 0x0000-0x01FF and 0x0200-0x03FF
+//  2. Write buffer sizes to 0x0400 (Tx) and 0x0408 (Rx)
+//  2. Start operation by writing mrq opcode to address 0x0500
+//  3. Read ret code from 0x0410 and response data from the buffers 
 
 static uint64_t nvidia_bpmp_guest_read(void *opaque, hwaddr addr, unsigned int size)
 {
@@ -55,7 +59,8 @@ static uint64_t nvidia_bpmp_guest_read(void *opaque, hwaddr addr, unsigned int s
 	if (addr >= MEM_SIZE)
 		return 0xDEADBEEF;
 
-	return s->mem[addr];
+	// Cast buffer location as uint64_t
+	return *(uint64_t*)&s->mem[addr];
 }
 
 static void nvidia_bpmp_guest_write(void *opaque, hwaddr addr, uint64_t data, unsigned int size)
@@ -79,19 +84,22 @@ static void nvidia_bpmp_guest_write(void *opaque, hwaddr addr, uint64_t data, un
 		} rx;
 	} messg;
 
-	if (addr >= MEM_SIZE)
+	memset(&messg, 0, sizeof(messg));
+
+	if (addr >= MEM_SIZE){
+		qemu_log_mask(LOG_UNIMP, "qemu: Error addr >= MEM_SIZE in 0x%lX data: 0x%lX\n", addr, data);
 		return;
+	}
 
 	switch (addr)
 	{
 	case MRQ:
-		s->mem[addr] = data;
 		// set up the structure
 		messg.mrq = data;
 		messg.tx.data = &s->mem[TX_BUF];
-		messg.tx.size = s->mem[TX_SIZ];
+		memcpy(&messg.tx.size, &s->mem[TX_SIZ], sizeof(messg.tx.size));
 		messg.rx.data = &s->mem[RX_BUF];
-		messg.rx.size = s->mem[RX_SIZ];
+		memcpy(&messg.rx.size, &s->mem[RX_SIZ], sizeof(messg.rx.size));
 
 		ret = write(s->host_device_fd, &messg, sizeof(messg)); // Send the data to the host module
 		if (ret < 0)
@@ -99,12 +107,15 @@ static void nvidia_bpmp_guest_write(void *opaque, hwaddr addr, uint64_t data, un
 			qemu_log_mask(LOG_UNIMP, "%s: Failed to write the host device..\n", __func__);
 			return;
 		}
-		s->mem[RET_COD] = messg.rx.ret;
-		s->mem[RX_SIZ] = messg.rx.size;
+
+		memcpy(&s->mem[RET_COD], &messg.rx.ret, sizeof(messg.rx.ret));
+		memcpy(&s->mem[RX_SIZ], &messg.rx.size, sizeof(messg.rx.size));
+
 		break;
 
 	default:
-		s->mem[addr] = data;
+
+		memcpy(&s->mem[addr], &data, size);
 	}
 
 	return;
@@ -121,7 +132,7 @@ static void nvidia_bpmp_guest_instance_init(Object *obj)
 	NvidiaBpmpGuestState *s = NVIDIA_BPMP_GUEST(obj);
 
 	/* allocate memory map region */
-	memory_region_init_io(&s->iomem, obj, &nvidia_bpmp_guest_ops, s, TYPE_NVIDIA_BPMP_GUEST, MEM_SIZE*sizeof(uint64_t));
+	memory_region_init_io(&s->iomem, obj, &nvidia_bpmp_guest_ops, s, TYPE_NVIDIA_BPMP_GUEST, MEM_SIZE);
 	sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->iomem);
 
 	s->host_device_fd = open(HOST_DEVICE_PATH, O_RDWR); // Open the device with read/write access
